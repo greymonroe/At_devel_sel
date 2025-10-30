@@ -1,0 +1,4 @@
+#OUT: 61 61 F data/slim_out/fixed.txt
+Mutations:
+0 4 m2 5015 0 0 p1 4 20 G
+1 26 m21 7502 -0.000205993 0 p1 10 60 C

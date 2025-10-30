@@ -1,0 +1,123 @@
+// SLiM arguments
+// M = du, or mutation multiplier for genic regions (e.g. M=0.25 would mean genic regions have a 75% reduction)
+// S = mean of gamma distribution of negative selection on non-synonymous
+// D = dominance of deleterious non-synonymous mutations
+// S2 = mean of gamma distribution of negative selection on synonymous
+// S3 = mean of gamma distribution of negative selection on non-coding genic
+// D2 = dominance of deleterious synonymous mutations
+// D3 = dominance of deleterious non-coding mutations
+
+// size of genome = 8000 bp
+// proportion of genic = 50%
+// proportion of genic that is coding = 50%
+// proportion of coding that cause non-synonymous mutations = 2/3
+
+// Notes
+// shape parameter of gamma distribution is 0.14 based on Plavskin et al. 2024
+//Ss<-c(0, 0.001, 0.01, 0.03, 0.05, 0.1, 0.5, 1) S values sampled for non-synonymous
+//Ds<-c(0,0.1, 0.5, 1)  D values sampled for non-synonymous
+//Ms<-seq(from=0.25, to=1, length.out=5) M values sampled (.25, .4375, .6250, .8125, 1.0)
+
+// each simulation represents 3 organism generations of mutaiton accumulation
+// simulations run 4000 times per combination of parameters (S, D, M)
+// returns fixed.txt which contains the fixed mutations in the final generation.
+
+initialize() {
+    initializeSLiMOptions(nucleotideBased=T); //nucleotide baseed sim
+
+ initializeAncestralNucleotides(randomNucleotides(8000)); //sets up for a simulated genome of 8000bp
+
+    initializeMutationTypeNuc("m1", 0.5, "f", 0.0); //intergenic
+    initializeMutationTypeNuc("m2", D, "g", -S, 0.14); //non-synonymous
+    initializeMutationTypeNuc("m21", D2, "g", -S2, 0.14); //synonymous
+    initializeMutationTypeNuc("m3", D3, "g", -S3, 0.14); //non-coding genic
+
+
+    initializeGenomicElementType("g1", c(m1), c(1), mmJukesCantor(3.5e-6));
+    initializeGenomicElementType("g2", c(m2, m3, m21), c(2, 1,1), mmJukesCantor(M*3.5e-6));
+
+    initializeGenomicElement(g1, 0, 3999); // representing non-genic regions
+    initializeGenomicElement(g2, 4000, 7999); // representing genic regions
+    initializeRecombinationRate(1e-8);
+}
+
+
+// we create a population of 2 cells (genetically effective cells in embryo) Generation 1 (G3)
+1 early() {
+	sim.addSubpop("p1", 2);
+	p1.setCloningRate(1);
+}
+
+// expand cells to create meristem central zone (CZ) for vegetative growth
+2:4 early() {
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+}
+// expand cells to generate large population of gametogenic cells
+10:18 early() {
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+}
+// all sexual reproduction of gametogenic cells
+19 early() {
+p1.setCloningRate(0);
+p1.setSelfingRate(0);
+}
+
+// Zygote (G2)
+20 early() {
+	p1.setSubpopulationSize(1);
+}
+
+// embryo to CZ
+21:24 early() {
+	p1.setCloningRate(1);
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+
+}
+
+30:38 early() {
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+}
+
+39 early() {
+p1.setCloningRate(0);
+p1.setSelfingRate(0);
+}
+
+// G3
+40 early() {
+	p1.setSubpopulationSize(1);
+}
+
+41:44 early() {
+p1.setCloningRate(1);
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+
+}
+
+50:58 early() {
+	newSize = asInteger(p1.individualCount * 2);
+	p1.setSubpopulationSize(newSize);
+}
+
+59 early() {
+p1.setCloningRate(0);
+p1.setSelfingRate(0);
+}
+
+60 early() {
+	p1.setSubpopulationSize(1);
+}
+
+// after 3 "generations" we sample the population and save fixed mutations
+61 late() {
+	p1.setSubpopulationSize(2);
+	g = p1.sampleIndividuals(1).genomes;
+	//g.outputVCF(filePath=paste("out.vcf", sep=""), simplifyNucleotides=F	);
+	//sim.outputFull(filePath=paste("out.txt", sep=""));
+	sim.outputFixedMutations(filePath=paste("data/slim_out/fixed.txt", sep=""));
+	}

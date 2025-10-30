@@ -1,0 +1,7 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/slim_out/*.csv
+data/slim_out/*.tsv
+data/slim_out/*.vcf
