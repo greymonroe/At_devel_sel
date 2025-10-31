@@ -6,6 +6,100 @@ library(seqinr)
 library(ggrepel)
 
 
+
+#' Estimate genic mutation rate relative to a reference and correct for NS selection
+#'
+#' Compares an observed genic mutation rate (mutations / genic bp) to a reference
+#' mutation rate (mutations / reference bp), then estimates how much of the
+#' difference could be explained by a deficit of nonsynonymous mutations.
+#'
+#' All class-specific deltas are defined as observed / expected (i.e. multipliers).
+#'
+#' @param gene_muts Integer. Total mutations in the focal genic region.
+#' @param ref_muts Integer. Total mutations in the reference region
+#'   (e.g. intergenic or non-focal genes).
+#' @param gene_len Numeric. Total bp of the focal genic region.
+#' @param ref_len Numeric. Total bp of the reference region.
+#' @param nonsyn_muts Integer. Observed nonsynonymous mutations in the focal genes.
+#' @param syn_muts Integer. Observed synonymous mutations in the focal genes.
+#' @param p_cds Numeric in (0,1]. Fraction of focal gene sequence that is CDS.
+#' @param neutral_ns_s Numeric > 0. Neutral NS/S ratio to use for expectations.
+#' @param return_reduction Logical. If TRUE, also return 1 - (multiplier) columns.
+#'
+#' @return data.table
+du_estimate <- function(
+    gene_muts,
+    ref_muts,
+    gene_len,
+    ref_len,
+    nonsyn_muts,
+    syn_muts,
+    p_cds,
+    neutral_ns_s,
+    return_reduction = TRUE
+) {
+  # 1) observed rates
+  mu_g_obs <- gene_muts / gene_len       # genic observed rate
+  mu_ref   <- ref_muts  / ref_len        # reference observed rate
+
+  # overall genic/reference multiplier
+  duO <- mu_g_obs / mu_ref               # <1 = hypomutation
+
+  # 2) split genic mutations
+  noncoding_muts <- gene_muts - syn_muts - nonsyn_muts
+
+  # 3) expected class proportions under neutrality
+  p_ns_exp <- p_cds * neutral_ns_s / (neutral_ns_s + 1)
+  p_s_exp  <- p_cds - p_ns_exp
+  p_nc_exp <- 1 - p_cds
+
+  # 4) expected counts if genes mutated like reference
+  gene_exp  <- mu_ref * gene_len
+  ns_exp_mu <- gene_exp * p_ns_exp
+  s_exp_mu  <- gene_exp * p_s_exp
+  nc_exp_mu <- gene_exp * p_nc_exp
+
+  # 5) independent NS expectation from observed S
+  ns_exp_s <- syn_muts * neutral_ns_s
+
+  # 6) correction term: how much of duO is just missing NS?
+  RNS <- (p_ns_exp * (ns_exp_s - nonsyn_muts) / ns_exp_mu)
+
+  # 7) selection-corrected overall multiplier
+  duEst <- duO + RNS
+
+  # 8) class-specific multipliers (observed / expected)
+  dmu_ns <- nonsyn_muts    / ns_exp_mu
+  dmu_s  <- syn_muts       / s_exp_mu
+  dmu_nc <- noncoding_muts / nc_exp_mu
+
+  # build output first (simpler to paste into console)
+  out <- data.table::data.table(
+    duO       = duO,
+    duEst     = duEst,
+    RNS       = RNS,
+    mu_g_obs  = mu_g_obs,
+    mu_ref    = mu_ref,
+    gene_exp  = gene_exp,
+    ns_exp_mu = ns_exp_mu,
+    s_exp_mu  = s_exp_mu,
+    nc_exp_mu = nc_exp_mu,
+    dmu_ns    = dmu_ns,
+    dmu_s     = dmu_s,
+    dmu_nc    = dmu_nc
+  )
+
+  if (isTRUE(return_reduction)) {
+    out[, duO_reduction       := 1 - duO]
+    out[, duEst_reduction     := 1 - duEst]
+    out[, dmu_ns_reduction    := 1 - dmu_ns]
+    out[, dmu_s_reduction     := 1 - dmu_s]
+    out[, dmu_nc_reduction    := 1 - dmu_nc]
+  }
+
+  out
+}
+
 # SLiM --------------------------------------------------------------------
 
 
@@ -221,98 +315,7 @@ plot_estSonly <- function(est, variable, yname) {
     )
 }
 
-#' Estimate genic mutation rate relative to a reference and correct for NS selection
-#'
-#' Compares an observed genic mutation rate (mutations / genic bp) to a reference
-#' mutation rate (mutations / reference bp), then estimates how much of the
-#' difference could be explained by a deficit of nonsynonymous mutations.
-#'
-#' All class-specific deltas are defined as observed / expected (i.e. multipliers).
-#'
-#' @param gene_muts Integer. Total mutations in the focal genic region.
-#' @param ref_muts Integer. Total mutations in the reference region
-#'   (e.g. intergenic or non-focal genes).
-#' @param gene_len Numeric. Total bp of the focal genic region.
-#' @param ref_len Numeric. Total bp of the reference region.
-#' @param nonsyn_muts Integer. Observed nonsynonymous mutations in the focal genes.
-#' @param syn_muts Integer. Observed synonymous mutations in the focal genes.
-#' @param p_cds Numeric in (0,1]. Fraction of focal gene sequence that is CDS.
-#' @param neutral_ns_s Numeric > 0. Neutral NS/S ratio to use for expectations.
-#' @param return_reduction Logical. If TRUE, also return 1 - (multiplier) columns.
-#'
-#' @return data.table
-du_estimate <- function(
-    gene_muts,
-    ref_muts,
-    gene_len,
-    ref_len,
-    nonsyn_muts,
-    syn_muts,
-    p_cds,
-    neutral_ns_s,
-    return_reduction = TRUE
-) {
-  # 1) observed rates
-  mu_g_obs <- gene_muts / gene_len       # genic observed rate
-  mu_ref   <- ref_muts  / ref_len        # reference observed rate
 
-  # overall genic/reference multiplier
-  duO <- mu_g_obs / mu_ref               # <1 = hypomutation
-
-  # 2) split genic mutations
-  noncoding_muts <- gene_muts - syn_muts - nonsyn_muts
-
-  # 3) expected class proportions under neutrality
-  p_ns_exp <- p_cds * neutral_ns_s / (neutral_ns_s + 1)
-  p_s_exp  <- p_cds - p_ns_exp
-  p_nc_exp <- 1 - p_cds
-
-  # 4) expected counts if genes mutated like reference
-  gene_exp  <- mu_ref * gene_len
-  ns_exp_mu <- gene_exp * p_ns_exp
-  s_exp_mu  <- gene_exp * p_s_exp
-  nc_exp_mu <- gene_exp * p_nc_exp
-
-  # 5) independent NS expectation from observed S
-  ns_exp_s <- syn_muts * neutral_ns_s
-
-  # 6) correction term: how much of duO is just missing NS
-  RNS <- (p_ns_exp * (ns_exp_s - nonsyn_muts) / ns_exp_mu)
-
-  # 7) selection-corrected overall multiplier
-  duEst <- duO + RNS
-
-  # 8) class-specific multipliers (observed / expected)
-  dmu_ns <- nonsyn_muts    / ns_exp_mu
-  dmu_s  <- syn_muts       / s_exp_mu
-  dmu_nc <- noncoding_muts / nc_exp_mu
-
-  # build output first (simpler to paste into console)
-  out <- data.table::data.table(
-    duO       = duO,
-    duEst     = duEst,
-    RNS       = RNS,
-    mu_g_obs  = mu_g_obs,
-    mu_ref    = mu_ref,
-    gene_exp  = gene_exp,
-    ns_exp_mu = ns_exp_mu,
-    s_exp_mu  = s_exp_mu,
-    nc_exp_mu = nc_exp_mu,
-    dmu_ns    = dmu_ns,
-    dmu_s     = dmu_s,
-    dmu_nc    = dmu_nc
-  )
-
-  if (isTRUE(return_reduction)) {
-    out[, duO_reduction       := 1 - duO]
-    out[, duEst_reduction     := 1 - duEst]
-    out[, dmu_ns_reduction    := 1 - dmu_ns]
-    out[, dmu_s_reduction     := 1 - dmu_s]
-    out[, dmu_nc_reduction    := 1 - dmu_nc]
-  }
-
-  out
-}
 
 # Estimating expected neutral Ns/S ----------------------------------------
 
