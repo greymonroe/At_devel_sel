@@ -3,6 +3,8 @@ library(polymorphology2) #github.com/greymonroe/polymorphology
 library(parallel)
 library(pbapply)
 library(seqinr)
+library(ggrepel)
+
 
 # SLiM --------------------------------------------------------------------
 
@@ -205,7 +207,6 @@ plot_estSonly <- function(est, variable, yname) {
     geom_point(shape = 20, size = 0.5) +
     geom_line() +
     facet_grid(~S) +
-    scale_y_continuous(name = yname) +
     scale_color_manual(values = c("black", "red")) +
     theme_bw(base_size = 6) +
     theme(
@@ -501,6 +502,248 @@ get_ns_s <- function(dt) {
 }
 
 # Mutation Accumulation Experiments ---------------------------------------
+
+
+# simple helper: bootstrap one source
+bootstrap_src_mutations <- function(dt_src, B = 1000L) {
+  n <- nrow(dt_src)
+  # preallocate
+  out <- vector("list", B)
+  for (b in seq_len(B)) {
+    samp <- dt_src[sample.int(n, n, replace = TRUE)]
+    NS   <- sum(samp$mutations_effect == "Non-Syn", na.rm = TRUE)
+    S    <- sum(samp$mutations_effect == "Syn",     na.rm = TRUE)
+    out[[b]] <- data.table(
+      nss   = NS / S,
+      genic = sum(samp$gene_body, na.rm = TRUE) / nrow(samp)
+    )
+  }
+  rbindlist(out)
+}
+
+plot_mutsrc_boot <- function(mutations,
+                             B = 1000L,
+                             neutral_nss = 2.74,
+                             genome_genic = 0.51) {
+
+  # 1) observed per source
+  summary_obs <- mutations[
+    ,
+    .(
+      NS    = sum(mutations_effect == "Non-Syn", na.rm = TRUE),
+      S     = sum(mutations_effect == "Syn",     na.rm = TRUE),
+      genic = sum(gene_body, na.rm = TRUE) / .N,
+      N     = .N
+    ),
+    by = src
+  ]
+  summary_obs[, nss := NS / S]
+
+  # 2) bootstrap per source
+  boot_list <- lapply(summary_obs$src, function(s) {
+    dt_src <- mutations[src == s]
+    bt     <- bootstrap_src_mutations(dt_src, B = B)
+    bt[, src := s]
+    bt
+  })
+  boot_dt <- rbindlist(boot_list, fill = TRUE)
+
+  # 3) CIs
+  ci_dt <- boot_dt[
+    ,
+    .(
+      nss_lo   = quantile(nss,   0.025, na.rm = TRUE),
+      nss_hi   = quantile(nss,   0.975, na.rm = TRUE),
+      genic_lo = quantile(genic, 0.025, na.rm = TRUE),
+      genic_hi = quantile(genic, 0.975, na.rm = TRUE)
+    ),
+    by = src
+  ]
+
+  plot_dt <- merge(summary_obs, ci_dt, by = "src", all.x = TRUE)
+
+  # 4) plot
+  p <- ggplot() +
+    geom_errorbar(
+      data = plot_dt,
+      aes(x = nss, ymin = genic_lo, ymax = genic_hi),
+      width = 0,
+      linewidth = 0.25,
+      col = "gray90"
+    ) +
+    geom_errorbar(
+      data = plot_dt,
+      aes(y = genic, xmin = nss_lo, xmax = nss_hi),
+      orientation = "y",
+      height = 0,
+      linewidth = 0.25,
+      col = "gray90"
+    ) +
+    geom_point(
+      data = plot_dt,
+      aes(x = nss, y = genic),
+      size = 1.5,
+      col  = "gray40"
+    ) +
+    ggrepel::geom_text_repel(
+      data = plot_dt,
+      aes(x = nss, y = genic, label = src),
+      size = 2.2,
+      max.overlaps = 40,
+      color = "gray15"
+    ) +
+    # vertical "neutral" line
+    geom_vline(
+      xintercept = neutral_nss,
+      linetype   = "dashed",
+      linewidth  = 0.3,
+      color      = "darkred"
+    ) +
+    annotate(
+      "text",
+      x     = neutral_nss,
+      y     = min(plot_dt$genic_lo, na.rm = TRUE) - 0.015,
+      label = "Neutral expectation\n(no selection)",
+      color = "darkred",
+      size  = 2.2,
+      vjust = 0,
+      hjust = -0.1
+    ) +
+    # horizontal "genome expectation" line
+    geom_hline(
+      yintercept = genome_genic,
+      linetype   = "dashed",
+      linewidth  = 0.3,
+      color      = "darkred"
+    ) +
+    annotate(
+      "text",
+      x     = max(plot_dt$nss, na.rm = TRUE),
+      y     = genome_genic,
+      label = "Genome expectation\n(no mutation bias)",
+      color = "darkred",
+      size  = 2.2,
+      hjust = 0,
+      vjust = 1.2
+    ) +
+    scale_y_continuous(name = "Fraction of mutations in genes") +
+    scale_x_log10(name = "Nonsynonymous / Synonymous mutations") +
+    labs(
+      title = "Selection and mutation bias signals in Arabidopsis MA datasets\n(bootstrapped 95% CI)"
+    ) +
+    theme_classic(base_size = 6)+
+    theme(panel.border = element_rect(linewidth = 0.5))
+
+  return(p)
+}
+
+
+
+bootstrap_src_mutations <- function(dt_src, B = 1000L) {
+  # dt_src: data.table of mutations for a single source (one src level)
+  n <- nrow(dt_src)
+  res <- vector("list", B)
+
+  for (b in seq_len(B)) {
+    idx <- sample.int(n, n, replace = TRUE)
+    x   <- dt_src[idx]
+
+    NSb    <- sum(x$mutations_effect == "Non-Syn", na.rm = TRUE)
+    Sb     <- sum(x$mutations_effect == "Syn",     na.rm = TRUE)
+    genicb <- sum(x$gene_body, na.rm = TRUE) / n
+
+    res[[b]] <- list(
+      nss   = if (Sb > 0) NSb / Sb else NA_real_,
+      genic = genicb
+    )
+  }
+
+  out <- rbindlist(res)
+  out
+}
+
+make_src_trimer_plots <- function(mutations, genome_triN) {
+  srcs <- sort(unique(mutations$src))
+
+  tri_plots <- lapply(srcs, function(s) {
+    x <- mutations[src == s & !is.na(trimer)]
+
+    tri_obj <- plot_tricontexts(
+      x$trimer,
+      full        = TRUE,
+      trimer_freq = genome_triN
+    )
+
+    tri_obj$plot + ggtitle(s)
+  })
+
+  names(tri_plots) <- srcs
+  tri_plots
+}
+
+make_genic_intergenic_trimer_plots <- function(mutations,
+                                               genes_triN,
+                                               intergenic_triN) {
+  # genic contexts
+  tri_genic <- plot_tricontexts(
+    mutations[gene_body == TRUE]$trimer,
+    full        = TRUE,
+    trimer_freq = genes_triN
+  )
+
+  # intergenic contexts
+  tri_nongenic <- plot_tricontexts(
+    mutations[gene_body == FALSE]$trimer,
+    full        = TRUE,
+    trimer_freq = intergenic_triN
+  )
+
+  # pull context tables
+  ct_genic    <- tri_genic$context_table[, .(context_only, mut, N_genic = N)]
+  ct_intergen <- tri_nongenic$context_table[, .(context_only, mut, N_intergenic = N)]
+
+  # merge and make ratio
+  ct_ratio <- merge(
+    ct_genic,
+    ct_intergen,
+    by = c("context_only", "mut"),
+    all = TRUE
+  )
+  ct_ratio[is.na(N_genic),       N_genic       := 0]
+  ct_ratio[is.na(N_intergenic),  N_intergenic  := 0]
+  ct_ratio[, ratio := (N_intergenic + 1e-6) / (N_genic + 1e-6)]
+
+  # plots
+  tri_genic_plot <- tri_genic$plot + ggtitle("Genic mutations")
+  tri_intergenic_plot <- tri_nongenic$plot + ggtitle("Intergenic mutations")
+
+  tri_ratio_plot <- ggplot(
+    ct_ratio,
+    aes(x = context_only, y = ratio, fill = mut)
+  ) +
+    geom_bar(stat = "identity", width = 0.5) +
+    facet_grid(. ~ mut, scales = "free_x", space = "free_x") +
+    scale_x_discrete(name = "Context") +
+    scale_y_continuous(name = "Intergenic / genic") +
+    theme_classic(base_size = 6) +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = "none",
+      strip.background = element_blank(),
+      strip.text = element_blank()
+    ) +
+    ggtitle("Relative enrichment (intergenic / genic)") +
+    scale_fill_manual(
+      values = c("cyan3", "black", "red4", "gray", "green3", "pink3"),
+      guide = "none"
+    )
+
+  list(
+    genic      = tri_genic_plot,
+    intergenic = tri_intergenic_plot,
+    ratio      = tri_ratio_plot
+  )
+}
 
 # annotate: is each mutation inside a given gene/feature set?
 annot_mut_geneset <- function(mutations, gene_set) {

@@ -9,7 +9,7 @@ ps      <- p_cds_global - pns                     # expected syn fraction
 
 ##  Read SLiM output and aggregate
 ## ------------------------------------------------------------
-muts <- fread("data/slim_out/SLiM_mutsM.csv")
+muts <- fread("data/slim_out/SLiM_mutsM.csv.gz")
 
 # collapse to parameter-level means
 
@@ -62,8 +62,8 @@ pdf("Figures/SLiM_meristem_analyses.pdf", width = 5, height = 4)
 ## 1) use the new rate columns from du_estimate ------------------------
 ## est$mu_g_obs = genic muts / genic bp
 ## est$mu_ref   = ref muts   / ref bp
-est$gene_rate  <- est$mu_g_obs * 1e9      # just to make axis nicer
-est$ref_rate   <- est$mu_ref   * 1e9
+est$gene_rate  <- est$mu_g_obs /4000/3/15000/10^-9     # mutations/bp/generation (~rescaled to At genome)
+est$ref_rate   <- est$mu_ref  /4000/3/15000/10^-9
 
 ## restrict to the clean subset you were plotting before
 est2 <- est[S2 == 0 & D %in% c(0, 1)]
@@ -109,7 +109,7 @@ p6 <- plot_estSonly(est, "duEst", "Δµ (Est)") +
 plot_grid2(
   plotlist     = list(p1, p2, p3, p4, p5, p6),
   type         = "rows",
-  relsize  = c(1.1, 1, 1, 1, 1, 1.2)
+  relsize  = c(1.1, 1, 1, 1, 1, 1.1)
 )
 dev.off()
 

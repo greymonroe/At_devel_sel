@@ -1,115 +1,28 @@
 source("code/functions.R")
 source("code/load_MA_data.R")
 
+# selection/bias across sources --------------------------
 
+p_mutsrc <- plot_mutsrc_boot(mutations, B = 1000)
 
-# selection/bias across sources -------------------------------------------
-
-
-summary <- mutations[
-  ,
-  .(
-    NS    = sum(mutations_effect == "Non-Syn", na.rm = TRUE),
-    S     = sum(mutations_effect == "Syn",     na.rm = TRUE),
-    genic = sum(gene_body, na.rm = TRUE) / .N
-  ),
-  by = src
-]
-summary[, nss := NS / S]
-
-# log-transform y in the data
-
-p_mutsrc <- ggplot(summary, aes(x = nss, y = genic, label = src)) +
-  geom_point(size = 3) +
-  ggrepel::geom_text_repel(size = 2.5, max.overlaps = 30) +
-  scale_y_continuous(
-    name = "Fraction of mutations in genes",
-  ) +
-  labs(
-    title = "Selection and mutation bias in data sources"
-  ) +
-  theme_classic(base_size = 6)+
-  scale_x_log10(
-    name = "Nonsynonymous / Synonymous mutations",
-  )
-
+pdf("Figures/mutation_source_At.pdf", width=3.5, height=3.5)
 p_mutsrc
+dev.off()
 
 # trimer contexts ---------------------------------------------------------
 
 
-## 1) build context objects
-tri_genic <- plot_tricontexts(
-  mutations[gene_body == TRUE]$trimer,
-  full       = TRUE,
-  trimer_freq = genes_triN
-)
+## usage
+tri_plots <- make_genic_intergenic_trimer_plots(mutations, genes_triN, intergenic_triN)
 
-tri_nongenic <- plot_tricontexts(
-  mutations[gene_body == FALSE]$trimer,
-  full        = TRUE,
-  trimer_freq = intergenic_triN
-)
-
-## 2) tidy up context tables so we can compare
-# we'll join by context_only + mut (that's what plot_tricontexts usually uses)
-ct_genic     <- tri_genic$context_table
-ct_intergen  <- tri_nongenic$context_table
-
-# rename N columns so we don't overwrite
-ct_genic    <- ct_genic[, .(context_only, mut, N_genic = N)]
-ct_intergen <- ct_intergen[, .(context_only, mut, N_intergenic = N)]
-
-# merge
-ct_ratio <- merge(
-  ct_genic, ct_intergen,
-  by = c("context_only", "mut"),
-  all = TRUE
-)
-
-# replace missing with 0
-ct_ratio[is.na(N_genic), N_genic := 0]
-ct_ratio[is.na(N_intergenic), N_intergenic := 0]
-
-# add ratio (add small eps to avoid div/0)
-ct_ratio[, ratio := (N_intergenic + 1e-6) / (N_genic + 1e-6)]
-
-## 3) figure 1: genic
-tri_genic_plot <- tri_genic$plot +
-  ggtitle("Genic mutations")
-
-## 4) figure 2: intergenic
-tri_intergenic_plot <- tri_nongenic$plot +
-  ggtitle("Intergenic mutations")
-
-## 5) figure 3: intergenic : genic ratio
-tri_ratio_plot <- ggplot(
-  ct_ratio,
-  aes(x = context_only, y = ratio, fill = mut)
-) +
-  geom_bar(stat = "identity", width = 0.5) +
-  facet_grid(. ~ mut, scales = "free_x", space = "free_x") +
-  scale_x_discrete(name = "Context") +
-  scale_y_continuous(name = "Intergenic / Genic") +
-  theme_classic(base_size = 6) +
-  theme(
-    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-    legend.position = "none",
-    strip.background = element_blank(),
-    strip.text = element_blank()
-  ) +
-  ggtitle("Relative enrichment of mutation (intergenic / genic)")+
-  scale_fill_manual(values = c("cyan3",   "black", "red4", "gray", "green3", "pink3"), guide = "none")
-
-## 6) collect ---------------------------------------
-tri_plots <- list(
-  genic       = tri_genic_plot,
-  intergenic  = tri_intergenic_plot,
-  ratio       = tri_ratio_plot
-)
-
+pdf("Figures/Trimer_contet_genic_intergenic.pdf", width=7, height=5)
 plot_grid2(tri_plots, type="rows")
+dev.off()
 
+pdf("Figures/Trimer_contet_sources.pdf", width=7, height=10)
+tri_plots <- make_src_trimer_plots(mutations, genome_triN)
+plot_grid2(tri_plots, type = "rows")
+dev.off()
 
 # Mono contexts -----------------------------------------------------------
 
