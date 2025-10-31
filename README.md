@@ -31,30 +31,6 @@ This repository contains SLiM simulations and R code used to quantify genic hypo
 2. **Re-analyze** Arabidopsis MA mutations against TAIR10, classify mutations (CDS / gene body / intergenic, NS vs S), and **apply the same estimator**.
 3. **Use `du_estimate()`** to ask: *given the neutral NS/S and coding fraction, how much of the observed drop in genic mutation rate can be explained by missing nonsynonymous mutations?* The remainder is interpreted as a true mutation-rate effect.
 
-## How to run
-
-1. Run SLiM to populate `data/slim_out/` (or use the provided CSVs).
-2. In R:
-
-```r
-source("code/functions.R")
-muts <- data.table::fread("data/slim_out/SLiM_mutsM.csv")
-
-est <- du_estimate(
-  gene_muts    = sum(muts$genic),
-  ref_muts     = sum(!muts$genic),
-  gene_len     = 4000,
-  ref_len      = 4000,
-  nonsyn_muts  = sum(muts$Dn),
-  syn_muts     = sum(muts$Ds),
-  p_cds        = 0.75,
-  neutral_ns_s = 2
-)
-print(est)
-```
-
-3. Use the plotting helpers to make PDFs in `Figures/`.
-
 ## Notes
 
 - All Arabidopsis coordinates and features are based on **TAIR10**.
