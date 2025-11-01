@@ -1,7 +1,11 @@
+.DS_Store
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+*.Rproj
+README.html
 data/slim_out/*.csv
 data/slim_out/*.tsv
 data/slim_out/*.vcf
+methods.txt
