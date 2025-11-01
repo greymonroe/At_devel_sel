@@ -2,8 +2,37 @@ source("code/functions.R")
 source("code/load_MA_data.R")
 
 # selection/bias across sources --------------------------
+neutrality <- neutral_NSS_estimate(mutations, cds, TAIR10[1:5], verbose = T)
 
-p_mutsrc <- plot_mutsrc_boot(mutations, B = 1000)
+codon_mut_counts <- neutrality$codon_mut_counts
+
+sizes <- 1*10^(seq(1, 5, length.out=30))
+results <- rbindlist(lapply(sizes, function(s) {
+  get_ratio_ci(
+    size = s,
+    n_iter = 100,
+    prop_cds = 0.279,
+    prop_genic = 0.501,
+    codon_mut_counts = codon_mut_counts
+  )
+}))
+
+
+# 1) build the bootstrapped data
+boot_dt <- build_mutsrc_boot(mutations, B = 1000)
+
+# 2) plot it
+p_mutsrc <- plot_mutsrc_boot(
+  plot_dt      = boot_dt,
+  CIresults    = results,              # your neutral CI object
+  neutral_nss  = res$neutral_ratio,    # from neutral_NSS_estimate(...)
+  genome_genic = 0.501,
+  xlimits      = c(0.5, 15),
+  ylimits      = c(0.1, 0.52),
+  alpha        = 0.0
+)
+
+p_mutsrc
 
 pdf("Figures/mutation_source_At.pdf", width=3.5, height=3.5)
 p_mutsrc

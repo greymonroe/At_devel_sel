@@ -7,6 +7,8 @@ library(ggrepel)
 
 
 
+# generally useful: -------------------------------------------------------
+
 #' Estimate genic mutation rate relative to a reference and correct for NS selection
 #'
 #' Compares an observed genic mutation rate (mutations / genic bp) to a reference
@@ -99,6 +101,238 @@ du_estimate <- function(
 
   out
 }
+
+
+#' Estimate a neutral nonsynonymous:synonymous (NS/S) ratio from CDS + mutation spectrum
+#'
+#' This function approximates the *neutral* expectation of NS/S given:
+#' 1) which codons actually occur in your coding sequences, and
+#' 2) which REF→ALT mutations you actually observe (mutation spectrum),
+#'    corrected by the background base composition in your genome.
+#'
+#' @param mutations data.table (or coercible) with at least columns:
+#'   - REF: reference nucleotide (A/T/C/G)
+#'   - ALT: alternative nucleotide (A/T/C/G)
+#'   Each row is assumed to be one observed mutation; if you already have counts,
+#'   add a column `N` and the function will respect it.
+#' @param cds_seq list from `seqinr::read.fasta(seqtype = "DNA")` containing
+#'   coding sequences (multiples of 3 preferred).
+#' @param genome_seq list from `seqinr::read.fasta(seqtype = "DNA")` containing
+#'   genome or a representative subset — used to estimate background base
+#'   frequencies so we can weight mutation probabilities by how often the REF
+#'   base is present.
+#' @param codon_table codon → AA table; by default uses
+#'   `seqinr::SEQINR.UTIL$CODON.AA`.
+#' @param verbose logical, print status and neutral NS/S to console.
+#'
+#' @return a list with
+#'   - $codon_mut_counts: data.table with REF, ALT, EFFECT, N (codon-weighted),
+#'       rawPROB (mutation-spectrum-weighted), totalprob, prop_prob
+#'   - $neutral_counts: data.table with EFFECT and total weight
+#'   - $neutral_ratio: scalar = Non-Syn / Syn
+#'
+#' @import data.table
+#' @export
+neutral_NSS_estimate <- function(mutations,
+                                 cds_seq,
+                                 genome_seq,
+                                 codon_table = seqinr::SEQINR.UTIL$CODON.AA,
+                                 verbose = TRUE) {
+  library(data.table)
+
+  ## ---------------------------------------------------------------------------
+  ## helper: count codons in a seqinr fasta (list of DNA chars)
+  ## ---------------------------------------------------------------------------
+  codon_counts_from_seqinr <- function(cds) {
+    if (is.null(names(cds))) {
+      names(cds) <- paste0("seq_", seq_along(cds))
+    }
+    dt_list <- lapply(seq_along(cds), function(i) {
+      gene_name <- names(cds)[i]
+      seq_vec   <- cds[[i]]
+      seq_vec   <- toupper(seq_vec)
+      seq_str   <- paste0(seq_vec, collapse = "")
+      n         <- nchar(seq_str)
+      if (n %% 3 != 0L) {
+        seq_str <- substr(seq_str, 1, n - (n %% 3))
+      }
+      starts <- seq(1, nchar(seq_str), by = 3)
+      ends   <- starts + 2
+      codons <- substring(seq_str, starts, ends)
+      data.table(GENE = gene_name, CODON = codons)[, .N, by = .(GENE, CODON)]
+    })
+    rbindlist(dt_list)
+  }
+
+  ## ---------------------------------------------------------------------------
+  ## helper: build all single-nt mutations for each codon
+  ## ---------------------------------------------------------------------------
+  make_codon_mutation_table <- function(codon_tbl) {
+    codons <- as.data.table(codon_tbl)
+    if (!"CODON" %in% names(codons)) stop("codon_tbl must have column 'CODON'")
+    if (!"AA"    %in% names(codons)) stop("codon_tbl must have column 'AA'")
+    codons[, CODON := toupper(CODON)]
+    nts <- c("A", "C", "G", "T")
+    codon_lookup <- copy(codons)[, .(NEWCODON = CODON, NEWAA = AA)]
+
+    mut_codons <- codons[, {
+      bases <- strsplit(CODON, "")[[1]]
+
+      out <- rbindlist(lapply(1:3, function(pos) {
+        REF <- bases[pos]
+        ALT <- setdiff(nts, REF)
+        data.table(ALT = ALT)[
+          , {
+            b <- bases
+            b[pos] <- ALT
+            NEWCODON <- paste0(b, collapse = "")
+            .(POS = pos,
+              REF = REF,
+              NEWCODON = NEWCODON)
+          },
+          by = ALT
+        ]
+      }))
+
+      out
+    }, by = .(CODON, AA)]
+
+    # attach NEWAA & effect
+    mut_codons[codon_lookup, on = "NEWCODON", NEWAA := i.NEWAA]
+    mut_codons[, EFFECT := ifelse(NEWAA == AA, "Syn", "Non-Syn")]
+    setcolorder(
+      mut_codons,
+      c("CODON", "AA", "POS", "REF", "ALT", "NEWCODON", "NEWAA", "EFFECT")
+    )
+    mut_codons[]
+  }
+
+  ## ---------------------------------------------------------------------------
+  ## helper: mutation_probs(mutations, genome_seq)
+  ## ---------------------------------------------------------------------------
+  mutation_probs <- function(mutations, genome_seq) {
+    mut_dt <- as.data.table(mutations)
+    if (!all(c("REF", "ALT") %in% names(mut_dt))) {
+      stop("mutations must have columns REF and ALT")
+    }
+
+    # if user already supplied counts, respect them
+    if (!"N" %in% names(mut_dt)) {
+      mut_dt[, N := 1L]
+    }
+
+    # observed per REF-ALT
+    obs <- mut_dt[, .(N = sum(N)), by = .(REF, ALT)]
+
+    # genome base frequencies
+    gen_vec <- toupper(unlist(genome_seq, use.names = FALSE))
+    gen_tab <- table(gen_vec)
+    gen_freq <- gen_tab / sum(gen_tab)
+
+    # distribution within each REF
+    obs[, total_ref := sum(N), by = REF]
+    obs[, frac_within_ref := N / total_ref]
+
+    # scale by availability of REF in genome
+    obs[, rawPROB := frac_within_ref * as.numeric(gen_freq[REF])]
+    obs[, c("total_ref", "frac_within_ref") := NULL]
+
+    # drop rows where REF not in genome (rare)
+    obs <- obs[!is.na(rawPROB)]
+
+    obs[]
+  }
+
+  ## =======================================================================
+  ## 1) codon counts from CDS
+  ## =======================================================================
+  if (verbose) message("[1/6] Counting codons in CDS...")
+  codon_dt <- codon_counts_from_seqinr(cds_seq)
+  codon_dt <- codon_dt[, .(N = sum(N)), by = CODON]
+  if (verbose) message("      Found ", nrow(codon_dt), " unique codons in CDS.")
+
+  ## =======================================================================
+  ## 2) all possible single-nt mutations per codon
+  ## =======================================================================
+  if (verbose) message("[2/6] Building codon → single-nt mutation table...")
+  mut_codons <- make_codon_mutation_table(codon_table)
+  if (verbose) message("      Built ", nrow(mut_codons), " codon-mutation rows.")
+
+  ## merge: each observed codon gets expanded to its 9 possible mutations
+  if (verbose) message("[3/6] Expanding observed codons to mutation opportunities...")
+  codon_dt_muts <- merge(
+    codon_dt,
+    mut_codons,
+    by = "CODON",
+    allow.cartesian = TRUE
+  )
+  if (verbose) message("      Expansion produced ", nrow(codon_dt_muts), " rows.")
+
+  ## =======================================================================
+  ## 3) aggregate by REF,ALT,EFFECT to know how many *opportunities* there are
+  ## =======================================================================
+  if (verbose) message("[4/6] Aggregating opportunities by REF, ALT, EFFECT...")
+  codon_mut_counts <- codon_dt_muts[
+    ,
+    .(N = sum(N)),
+    by = .(REF, ALT, EFFECT)
+  ][order(REF, ALT, EFFECT)]
+  if (verbose) message("      Aggregated to ", nrow(codon_mut_counts), " REF-ALT-EFFECT bins.")
+
+  ## =======================================================================
+  ## 4) get mutation probs from observed spectrum + genome base freq
+  ## =======================================================================
+  if (verbose) message("[5/6] Estimating mutation probabilities from spectrum + genome...")
+  mut_probs <- mutation_probs(mutations, genome_seq)
+
+  codon_mut_counts <- merge(
+    codon_mut_counts,
+    mut_probs[, .(REF, ALT, rawPROB)],
+    by = c("REF", "ALT"),
+    all.x = TRUE
+  )
+
+  # if some REF/ALT combos are impossible in spectrum, treat as 0
+  codon_mut_counts[is.na(rawPROB), rawPROB := 0]
+
+  ## =======================================================================
+  ## 5) weight opportunity N by mutation probability
+  ## =======================================================================
+  if (verbose) message("[6/6] Weighting opportunities by mutation probability and normalizing...")
+  codon_mut_counts[, totalprob := N * rawPROB]
+
+  total_sum <- sum(codon_mut_counts$totalprob)
+  if (total_sum > 0) {
+    codon_mut_counts[, prop_prob := totalprob / total_sum]
+  } else {
+    codon_mut_counts[, prop_prob := 0]
+  }
+
+  ## =======================================================================
+  ## 6) collapse to Syn / Non-Syn weights → neutral NS/S
+  ## =======================================================================
+  neutral_counts <- codon_mut_counts[, .(weight = sum(prop_prob)), by = EFFECT]
+
+  non_syn_w <- neutral_counts[EFFECT == "Non-Syn", weight]
+  syn_w     <- neutral_counts[EFFECT == "Syn",     weight]
+
+  neutral_ratio <- if (length(non_syn_w) && length(syn_w) && syn_w > 0) {
+    non_syn_w / syn_w
+  } else {
+    NA_real_
+  }
+
+  if (verbose) {
+    message("✔ neutral NS/S estimate = ", neutral_ratio)
+  }
+
+  list(
+    codon_mut_counts = codon_mut_counts[],
+    neutral_counts   = neutral_counts[],
+    neutral_ratio    = neutral_ratio
+  )
+}
+
 
 # SLiM --------------------------------------------------------------------
 
@@ -319,6 +553,195 @@ plot_estSonly <- function(est, variable, yname) {
 
 # Estimating expected neutral Ns/S ----------------------------------------
 
+
+simulate_random_muts <- function(size = 100,
+                                   prop_cds = 0.279,
+                                   prop_genic = 0.501,
+                                   codon_mut_counts) {
+  # codon_mut_counts: e.g. neutrality$codon_mut_counts
+  # must have EFFECT and prop_prob cols
+
+  # 1) sample which sites are genic
+  genic_samp <- rbinom(n = size, size = 1, prob = prop_genic)
+
+  # 2) among genic sites, sample which are CDS
+  n_genic <- sum(genic_samp)
+  # prob that a genic site is coding
+  p_cds_given_genic <- prop_cds / prop_genic
+  cds_samp <- integer(size)  # 0/1 for all sites
+  if (n_genic > 0) {
+    cds_samp[which(genic_samp == 1)] <- rbinom(
+      n = n_genic,
+      size = 1,
+      prob = p_cds_given_genic
+    )
+  }
+
+  # 3) for CDS sites, draw effects according to neutral probs
+  n_cds <- sum(cds_samp)
+  if (n_cds > 0) {
+    effects <- sample(
+      codon_mut_counts$EFFECT,
+      size = n_cds,
+      prob = codon_mut_counts$prop_prob,
+      replace = TRUE
+    )
+    ratio <- sum(effects == "Non-Syn") / sum(effects == "Syn")
+  } else {
+    ratio <- NA_real_
+  }
+
+  data.table::data.table(
+    size      = size,
+    genic_n   = n_genic,
+    genic_prop = n_genic/size,
+    cds_n     = n_cds,
+    ns_s_ratio = ratio
+  )
+}
+
+
+# wrapper to run many times and get CI
+get_ratio_ci <- function(size,
+                         n_iter = 1000,
+                         prop_cds = 0.279,
+                         prop_genic = 0.501,
+                         codon_mut_counts) {
+  sims <- rbindlist(
+    replicate(
+      n_iter,
+      simulate_random_muts(
+        size = size,
+        prop_cds = prop_cds,
+        prop_genic = prop_genic,
+        codon_mut_counts = codon_mut_counts
+      ),
+      simplify = FALSE
+    )
+  )
+
+  # drop NAs (occasional no-CDS replicate)
+  sims <- sims[!is.na(ns_s_ratio)]
+
+  data.table(
+    size   = size,
+    n_iter = nrow(sims),
+    mean   = mean(sims$ns_s_ratio),
+    lwr95  = quantile(sims$ns_s_ratio, 0.025),
+    upr95  = quantile(sims$ns_s_ratio, 0.975),
+    mean_genic   = mean(sims$genic_prop),
+    genic_prop_lwr95  = quantile(sims$genic_prop, 0.025),
+    genic_prop_upr95  = quantile(sims$genic_prop, 0.975)
+  )
+}
+
+make_empty_codon_mutation_table <- function(codon_tbl = seqinr::SEQINR.UTIL$CODON.AA) {
+  library(data.table)
+
+  # turn whatever we got into a data.table
+  codons <- as.data.table(codon_tbl)
+
+  # sanity checks
+  if (!"CODON" %in% names(codons)) {
+    stop("codon_tbl must have a column named 'CODON'")
+  }
+  if (!"AA" %in% names(codons)) {
+    stop("codon_tbl must have a column named 'AA'")
+  }
+
+  # normalize case
+  codons[, CODON := toupper(CODON)]
+
+  # alphabet
+  nts <- c("A", "C", "G", "T")
+
+  # lookup new codon -> AA
+  codon_lookup <- copy(codons)[, .(NEWCODON = CODON, NEWAA = AA)]
+
+  mut_codons <- codons[, {
+    bases <- strsplit(CODON, "")[[1]]  # e.g. c("A","A","A")
+
+    out <- rbindlist(lapply(1:3, function(pos) {
+      REF <- bases[pos]
+      ALT <- setdiff(nts, REF)  # 3 alts
+
+      # make 3 rows for this position
+      data.table(ALT = ALT)[
+        , {
+          b <- bases
+          b[pos] <- ALT
+          NEWCODON <- paste0(b, collapse = "")
+          .(POS = pos,
+            REF = REF,
+            NEWCODON = NEWCODON)
+        },
+        by = ALT  # <– ALT only comes from here now
+      ]
+    }))
+
+    out
+  }, by = .(CODON, AA)]
+
+  # join new AA
+  mut_codons[codon_lookup, on = "NEWCODON", NEWAA := i.NEWAA]
+
+  # effect
+  mut_codons[, effect := ifelse(NEWAA == AA, "S", "N")]
+
+  # final order
+  setcolorder(
+    mut_codons,
+    c("CODON", "AA", "POS", "REF", "ALT", "NEWCODON", "NEWAA", "effect")
+  )
+
+  mut_codons[]
+}
+
+
+codon_counts_from_seqinr <- function(cds) {
+  # cds: list from read.fasta()
+
+  # make sure names exist
+  if (is.null(names(cds))) {
+    names(cds) <- paste0("seq_", seq_along(cds))
+  }
+
+  dt_list <- lapply(seq_along(cds), function(i) {
+    gene_name <- names(cds)[i]
+    seq_vec   <- cds[[i]]        # this is a character vector like c("a","t","g","c",...)
+
+    # to upper
+    seq_vec <- toupper(seq_vec)
+
+    # collapse to string
+    seq_str <- paste0(seq_vec, collapse = "")
+
+    # trim to multiple of 3 (safety)
+    n <- nchar(seq_str)
+    if (n %% 3 != 0L) {
+      seq_str <- substr(seq_str, 1, n - (n %% 3))
+    }
+
+    # split into codons
+    starts <- seq(1, nchar(seq_str), by = 3)
+    ends   <- starts + 2
+    codons <- substring(seq_str, starts, ends)
+
+    # make per-gene counts
+    data.table(
+      GENE  = gene_name,
+      CODON = codons
+    )[, .N, by = .(GENE, CODON)]
+  })
+
+
+  dt_list<-rbindlist(dt_list)
+  dt_list_counts_all<-dt_list[,.(N=sum(N)), by=CODON]
+  dt_list_counts_all <- dt_list_counts_all[grepl("^[ATCG]{3}$", CODON)]
+  return(dt_list_counts_all)
+}
+
+
 #' Convert CDS FASTA into a codon-level mutation table
 #'
 #' For each coding sequence (CDS) in a FASTA (read with **seqinr**), enumerate
@@ -524,10 +947,17 @@ bootstrap_src_mutations <- function(dt_src, B = 1000L) {
   rbindlist(out)
 }
 
-plot_mutsrc_boot <- function(mutations,
-                             B = 1000L,
-                             neutral_nss = 2.74,
-                             genome_genic = 0.51) {
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+
+# 1) DATA FUNCTION ---------------------------------------------------------
+# returns a data.table with:
+#   src, NS, S, genic, N, nss,
+#   nss_lo, nss_hi, genic_lo, genic_hi
+build_mutsrc_boot <- function(mutations,
+                              B = 1000L,
+                              bootstrap_fun = bootstrap_src_mutations) {
 
   # 1) observed per source
   summary_obs <- mutations[
@@ -545,12 +975,12 @@ plot_mutsrc_boot <- function(mutations,
   # 2) bootstrap per source
   boot_list <- lapply(summary_obs$src, function(s) {
     dt_src <- mutations[src == s]
-    bt     <- bootstrap_src_mutations(dt_src, B = B)
+    bt     <- bootstrap_fun(dt_src, B = B)
     bt[, src := s]
     bt
   })
   boot_dt <- rbindlist(boot_list, fill = TRUE)
-
+  boot_dt<-boot_dt[is.finite(nss) & is.finite(genic)]
   # 3) CIs
   ci_dt <- boot_dt[
     ,
@@ -563,10 +993,51 @@ plot_mutsrc_boot <- function(mutations,
     by = src
   ]
 
+  # 4) final table for plotting
   plot_dt <- merge(summary_obs, ci_dt, by = "src", all.x = TRUE)
 
-  # 4) plot
+  plot_dt[]
+}
+
+
+# 2) PLOT FUNCTION ---------------------------------------------------------
+plot_mutsrc_boot <- function(plot_dt,
+                             CIresults,
+                             neutral_nss = 2.74,
+                             genome_genic = 0.51,
+                             xlimits = c(0.5, 10),
+                             ylimits = c(0.1, 0.7),
+                             alpha = 0.02) {
+
+  # keep CI x-band within plotting range to avoid log10 problems
+
   p <- ggplot() +
+    # vertical neutral ribbon (NS/S)
+    annotate("rect",
+             xmin = CIresults$lwr95, xmax = CIresults$upr95,
+             ymin = ylimits[1], ymax = ylimits[2],
+             fill = "darkred", alpha = alpha) +
+    # horizontal genic ribbon
+    annotate("rect",
+             xmin = xlimits[1],
+             xmax = xlimits[2],
+             ymin = CIresults$genic_prop_lwr95,
+             ymax = CIresults$genic_prop_upr95,
+             fill = "darkred", alpha = alpha) +
+    geom_hline(
+               yintercept = genome_genic,
+               linetype   = "11",
+               linewidth  = 0.3,
+               color      = "darkred"
+             ) +
+    # vertical neutral line
+    geom_vline(
+      xintercept = neutral_nss,
+      linetype   = "11",
+      linewidth  = 0.3,
+      color      = "darkred"
+    ) +
+    # vertical error bars (genic CI)
     geom_errorbar(
       data = plot_dt,
       aes(x = nss, ymin = genic_lo, ymax = genic_hi),
@@ -574,6 +1045,8 @@ plot_mutsrc_boot <- function(mutations,
       linewidth = 0.25,
       col = "gray90"
     ) +
+
+    # horizontal error bars (nss CI)
     geom_errorbar(
       data = plot_dt,
       aes(y = genic, xmin = nss_lo, xmax = nss_hi),
@@ -582,12 +1055,14 @@ plot_mutsrc_boot <- function(mutations,
       linewidth = 0.25,
       col = "gray90"
     ) +
+    # points
     geom_point(
       data = plot_dt,
       aes(x = nss, y = genic),
       size = 1.5,
       col  = "gray40"
     ) +
+    # labels
     ggrepel::geom_text_repel(
       data = plot_dt,
       aes(x = nss, y = genic, label = src),
@@ -595,13 +1070,7 @@ plot_mutsrc_boot <- function(mutations,
       max.overlaps = 40,
       color = "gray15"
     ) +
-    # vertical "neutral" line
-    geom_vline(
-      xintercept = neutral_nss,
-      linetype   = "dashed",
-      linewidth  = 0.3,
-      color      = "darkred"
-    ) +
+
     annotate(
       "text",
       x     = neutral_nss,
@@ -612,13 +1081,8 @@ plot_mutsrc_boot <- function(mutations,
       vjust = 0,
       hjust = -0.1
     ) +
-    # horizontal "genome expectation" line
-    geom_hline(
-      yintercept = genome_genic,
-      linetype   = "dashed",
-      linewidth  = 0.3,
-      color      = "darkred"
-    ) +
+    # horizontal genome line
+
     annotate(
       "text",
       x     = max(plot_dt$nss, na.rm = TRUE),
@@ -629,17 +1093,24 @@ plot_mutsrc_boot <- function(mutations,
       hjust = 0,
       vjust = 1.2
     ) +
-    scale_y_continuous(name = "Fraction of mutations in genes") +
-    scale_x_log10(name = "Nonsynonymous / Synonymous mutations") +
+    scale_y_continuous(
+      name   = "Fraction of mutations in genes",
+      limits = ylimits,
+      expand=c(0,0)
+    ) +
+    scale_x_log10(
+      name   = "Nonsynonymous / Synonymous mutations",
+      limits = xlimits,
+      expand = c(0, 0)
+    ) +
     labs(
       title = "Selection and mutation bias signals in Arabidopsis MA datasets\n(bootstrapped 95% CI)"
     ) +
-    theme_classic(base_size = 6)+
-    theme(panel.border = element_rect(linewidth = 0.5))
+    theme_classic(base_size = 6) +
+    theme(panel.border = element_rect(linewidth = 0.5, fill = NA))
 
-  return(p)
+  p
 }
-
 
 
 bootstrap_src_mutations <- function(dt_src, B = 1000L) {

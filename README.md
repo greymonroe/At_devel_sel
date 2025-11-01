@@ -1,39 +1,26 @@
 # Delineating Mutation Bias and Selection during Plant Development
 
-This repository contains SLiM simulations and R code used to quantify genic hypomutation in plants and to separate **true mutation-rate reductions** from **apparent reductions caused by selection on nonsynonymous sites**.
+This repository contains code and simulation material from **Monroe et al. 2025**. The goal is to quantify genic hypomutation in plants and to separate **true mutation-rate reductions** from **apparent reductions caused by selection on nonsynonymous sites**.
 
-## Contents
+## Structure
 
 - `code/`
-  - `functions.R` – shared helpers (loading TAIR10, feature overlap, plotting, utilities).
-  - `du_estimate.R` (or inline in analysis scripts) – **core function** that takes observed genic and reference mutation counts, the CDS fraction, and a neutral NS/S ratio, and returns:
-    - observed genic/reference multiplier (`duO = µ_G / µ_ref`);
-    - selection-corrected multiplier (`duEst`);
-    - the nonsynonymous correction term (`RNS`);
-    - class-specific multipliers for NS, S, and noncoding genic mutations.
-  - plotting helpers to reproduce the figures (genic vs intergenic, Δµ vs M, NS/S diagnostics).
+  - `functions.R` — main R helpers for wrangling, loading, plotting, and basic stats.
+    - `neutral_NSS_estimate()` — estimates a neutral nonsynonymous/synonymous (NS/S) ratio from:
+      1. observed mutation spectrum (REF→ALT),
+      2. CDS codon usage,
+      3. genome base composition.
+      Returns a list with (i) spectra and codon-weighted mutation probabilites, (ii) effect-level weights, and (iii) the neutral NS/S ratio.
+    - `du_estimate()` (or inline in analysis scripts) — core routine to estimate observed and selection-corrected genic mutation-rate multipliers.
+
+- `slim/`
+  - `meristems.slim` — forward SLiM simulation of 3 “generations” of meristem-like growth and reproduction; parameters for genic mutation multiplier (`M`), nonsynonymous selection strength (`S`), dominance (`D`), and separate synonymous / noncoding genic classes.
 
 - `data/`
-  - `slim_out/*.csv` – mutation tables exported by SLiM for each parameter combination.
-  - annotated Arabidopsis MA mutations (SBS-only, singletons, TAIR10-anchored).
+  - mutation datasets, SLiM outputs, and reference genomes (not all tracked in git due to size).
 
-- `slim/` or `R/meristems2.slim`
-  - forward simulation of 3 “generations” of meristem-like growth;
-  - tunable parameters: genic mutation multiplier (`M`), selection on nonsynonymous (`S`), dominance (`D`), and separate synonymous / noncoding genic classes;
-  - writes `fixed.txt` to `data/slim_out/`, which the R scripts aggregate.
+## Requirements
 
-- `Figures/`
-  - R scripts export the same panels shown in the manuscript (mutation-rate contrasts and component plots).
-
-## Key idea
-
-1. **Simulate** genic vs intergenic mutations under different (`M`, `S`, `D`) to see how much hypomutation can be created by selection alone.
-2. **Re-analyze** Arabidopsis MA mutations against TAIR10, classify mutations (CDS / gene body / intergenic, NS vs S), and **apply the same estimator**.
-3. **Use `du_estimate()`** to ask: *given the neutral NS/S and coding fraction, how much of the observed drop in genic mutation rate can be explained by missing nonsynonymous mutations?* The remainder is interpreted as a true mutation-rate effect.
-
-## Notes
-
-- All Arabidopsis coordinates and features are based on **TAIR10**.
-- Mutation tables were filtered to **single-base substitutions** and **singletons** to reduce calling/reporting artifacts.
-- The selection-correction logic in `du_estimate()` is the reusable part of this repository.
-
+- R (≥ 4.2 recommended)
+- packages: `data.table`, `seqinr`, `ggplot2`, `ggrepel`, `polymorphology2`
+- for SLiM runs: SLiM 5
