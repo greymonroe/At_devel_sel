@@ -91,6 +91,5 @@ message("[load_MA_data] Done.")
 
 
 # mutation probabilities and effects --------------------------------------
-CDS_dt_all_prob_means_effects<-fread("tables/mutation_probabilities_effects.csv")
-CDS_dt_all_prob_means_split<-fread("tables/mutation_probabilities_effects_split.csv")
+codon_mut_counts<-fread("tables/codon_mut_counts.csv")
 

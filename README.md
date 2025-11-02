@@ -19,6 +19,12 @@ This repository contains code and simulation material from **Monroe et al. 2025*
 - `data/`
   - mutation datasets, SLiM outputs, and reference genomes (not all tracked in git due to size).
 
+-`tables/`
+  - `mutations_Athal_annotated.csv`
+  - `SLiM_out.csv`
+  - `mutations_Athal_annotated.csv`
+  - `codon_mut_counts.csv`
+
 ## Requirements
 
 - R (≥ 4.2 recommended)

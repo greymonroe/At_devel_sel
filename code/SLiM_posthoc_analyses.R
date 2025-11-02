@@ -65,8 +65,10 @@ pdf("Figures/SLiM_meristem_analyses.pdf", width = 5, height = 4)
 est$gene_rate  <- est$mu_g_obs /4000/3/15000/10^-9     # mutations/bp/generation (~rescaled to At genome)
 est$ref_rate   <- est$mu_ref  /4000/3/15000/10^-9
 
-## restrict to the clean subset you were plotting before
+## subset to target parameters
 est2 <- est[S2 == 0 & D %in% c(0, 1)]
+
+fwrite(est2,"tables/SLiM_out.csv")
 
 ## y-range shared by first two plots
 lims <- range(c(est2$ref_rate, est2$gene_rate), na.rm = TRUE)

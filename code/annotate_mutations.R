@@ -151,8 +151,15 @@ fwrite(genome_triN, "data/TAIR10/genome_trimers.csv")
 
 
 
+# build mutation probability+effect tables -----------------------------------------
+neutrality <- neutral_NSS_estimate(mutations, cds, TAIR10[1:5], verbose = T)
+codon_mut_counts <- neutrality$codon_mut_counts
+fwrite(codon_mut_counts, "tables/codon_mut_counts.csv")
 
-# build mutation probability+effect tables --------------------------------
+
+
+
+# build mutation probability+effect tables prev version--------------------------------
 
 ## section commented due to size and time required to generate.
 # t<-Sys.time()

@@ -5,6 +5,7 @@ source("code/load_MA_data.R")
 neutrality <- neutral_NSS_estimate(mutations, cds, TAIR10[1:5], verbose = T)
 
 codon_mut_counts <- neutrality$codon_mut_counts
+fwrite(codon_mut_counts, "tables/codon_mut_counts.csv")
 
 sizes <- 1*10^(seq(1, 5, length.out=30))
 results <- rbindlist(lapply(sizes, function(s) {
